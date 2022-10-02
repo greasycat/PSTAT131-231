@@ -1,0 +1,14 @@
+# Question 1
+
+- Supervised learning is the learning to predict a response given a range of predictor 
+- Unsupervised learning is the learning of the patterns or features of the response given a range of predictors
+- The difference is that unlike, supervised learning, Unsupervised learning has no measure of the response, or the output
+(ESL #xi)
+
+# Question 2
+Regression aims to find out a quantitative outcome. But classficiation gives a qualitative outcome (Lecture)
+
+# Question 3
+# Question 4
+# Question 5
+# Question 6
