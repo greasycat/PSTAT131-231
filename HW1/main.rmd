@@ -1,3 +1,8 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
 # Question 1
 
 - Supervised learning is the learning to predict a response given a range of predictor 
