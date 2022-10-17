@@ -1,0 +1,124 @@
+# Data preparation
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+```
+
+```{r}
+df <- read.csv("data/abalone.csv")
+df <- df %>% mutate(age = rings + 1.5)
+df <- df %>% select(-rings)
+head(df)
+
+```
+
+# Q1
+```{r}
+df %>% ggplot(aes(x = age)) + geom_bar()
+summary(df$age)
+# pairs(select(df, -type))
+```
+
+
+```{r}
+df %>% 
+    select(is.numeric) %>%
+    cor() %>%
+    corrplot(diag = FALSE, method = 'color')
+    
+```
+
+```{r}
+df %>%
+    ggplot(aes(x = age, y = reorder(type, age))) +
+    geom_boxplot() +
+    labs(x = "Age", y = "Type")
+
+```
+
+
+- The distribution is right skewed
+- The most shells have been around 10.5 yrs with a max of 30.5 and a minimum of 2.5 (range 28)
+- The correlation matrix suggests a 0.4-0.6 coefficient between age and all the other predictors (except shucked_weight around 0.2, and rings 1)
+- It also suggest that most of the predictors are medium-correlated
+- The barplot suggest that M and F type have same age distribution and is higher than I type
+
+# Q2
+
+```{r}
+set.seed(1234)
+df_split <- initial_split(df, prop = 0.80,
+                                strata = age)
+df_training <- training(df_split)
+df_testing <- testing(df_split)
+```
+
+# Q3
+```{r}
+recipe <- recipe(age ~ ., data = df_training) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_interact(terms = ~ starts_with('type_'):shucked_weight) %>%
+    step_interact(terms = ~ longest_shell:diameter) %>%
+    step_interact(terms = ~ shucked_weight:shell_weight) %>%
+    step_normalize(all_numeric_predictors()) 
+recipe
+```
+# Q4
+```{r}
+lm_model <- linear_reg()
+```
+
+# Q5
+```{r}
+lm_wflow <- workflow() %>%
+    add_model(lm_model) %>%
+    add_recipe(recipe = recipe)
+lm_fit <- fit(lm_wflow, df_training)
+res <- lm_fit %>% extract_fit_parsnip() %>% tidy()
+print(res)
+```
+
+# Q6
+```{r}
+predict_1 <- data_frame(type = 'F', longest_shell = 0.50, diameter = 0.10, height = 0.30, whole_weight = 4, shucked_weight = 1, viscera_weight = 2, shell_weight = 1)
+predict_result = predict(lm_fit, predict_1)
+print(predict_result)
+```
+
+# Q7
+```{r}
+metrics <- metric_set(rmse, rsq, mae)
+
+train_res <- predict(lm_fit, new_data = df_training %>% select(-age)) 
+train_res <- bind_cols(train_res, df_training %>% select(age))
+head(train_res)
+
+train_res %>% ggplot(aes(x = .pred, y = age)) +
+    geom_point(alpha = 0.2) +
+    geom_abline(lty = 2) +
+    coord_obs_pred()
+
+train_res %>% metrics(truth = age, estimate = .pred)
+```
+$R^2 \approx 0.558$ indicates that 55.8% of variance was explained by the model. Therefore the model is a medium fit and adding more predictors to increase the flexibility may further increase $R^2$
+
+# 8
+Reducible Error: $Var(\hat f(x_0))+[Bias(\hat f(x_0))]^2$
+Irreducible Error: $Var(\epsilon)$
+
+# 9
+$$Var(\hat f(x_i))+[Bias(\hat f(x_i))]^2 = \frac{\sum(x_i-\hat f(x_i))^2}{n-1}+[Bias(\hat f(x_i))]^2\geq 0$$
+$$E(y_i - \hat f(x_i))^2) \geq Var(\epsilon)$$
+
+# 10
+$$
+\begin{eqnarray}
+E[(y-\hat f(x))^2] &=& E[(f(x)+\epsilon-\hat f(x))^2] \\
+&=& E[(f(x)-\hat f(x))^2] +E[\epsilon^2]+2E[(f(x)-\hat f(x))\epsilon] \\
+&=& E[(E[\hat f(x)] - f(x))^2] + E[(\hat f(x)-E[\hat f(x)])] - 2(f(x)-E[\hat f(x)])(E[\hat f(x)]-E[\hat f(x)]) + Var(e) + 0 \\
+&=& E[(E[\hat f(x)] - f(x))^2] + E[(\hat f(x)-E[\hat f(x)])] + 0 + Var(\epsilon) \\
+&=& Bias[\hat f(x)]^2 + Var(\hat f(x)) + Var(\epsilon)
+\end{eqnarray}
+$$
+
