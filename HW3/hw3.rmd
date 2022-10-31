@@ -1,0 +1,299 @@
+---
+title: "Homework 3"
+author: "PSTAT 131/231"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR) # for naive bayes
+tidymodels_prefer()
+```
+
+```{r}
+df_titanic <- read.csv("data/titanic.csv")
+summary(df_titanic)
+
+# Factorization and relevel
+df_titanic <- df_titanic %>%
+  mutate(pclass = factor(pclass), survived = factor(survived)) %>%
+  mutate(survived = fct_relevel(survived, c("Yes", "No")))
+
+levels(df_titanic$pclass)
+levels(df_titanic$survived)
+
+```
+# Q1 Data splitting
+
+```{r}
+set.seed(256)
+titanic_split <- initial_split(df_titanic, prop = 0.7, strata = survived)
+titanic_train <- training(titanic_split)
+titanic_testing <- testing(titanic_split)
+
+# Missing data
+colnames(df_titanic)[colSums(is.na(df_titanic)) > 0]
+```
+- Age and Cabin and Embarked columns have missing data
+- Use stratified sampling to make sure even representation of subgroups 
+
+# Q2
+```{r}
+head(titanic_train)
+titanic_train %>%
+  ggplot(aes(x = survived, fill = pclass)) +
+  geom_bar()
+
+titanic_train %>%
+  filter(pclass == "1") %>%
+  ggplot(aes(x = pclass, fill = survived)) +
+  geom_bar() +
+  ggtitle("Class 1 survival")
+
+titanic_train %>%
+  filter(pclass == "2") %>%
+  ggplot(aes(x = pclass, fill = survived)) +
+  geom_bar() + 
+  ggtitle("Class 2 survival")
+
+titanic_train %>%
+  filter(pclass == "3") %>%
+  ggplot(aes(x = pclass, fill = survived)) +
+  geom_bar() +
+  ggtitle("Class 3 survival")
+
+titanic_train %>%
+  ggplot(aes(x = sex, fill = survived)) +
+  geom_bar() +
+  ggtitle("Sex survival")
+
+titanic_train %>%
+  ggplot(aes(x = survived, y = age)) +
+  geom_boxplot() +
+  ggtitle("Age survival")
+
+titanic_train %>%
+  ggplot(aes(x = survived, y = sib_sp)) +
+  geom_boxplot() +
+  ggtitle("Sibling")
+
+
+titanic_train %>%
+  ggplot(aes(x = survived, y = parch)) +
+  geom_boxplot() +
+  ggtitle("Parent")
+
+titanic_train %>%
+  ggplot(aes(x = survived, y = fare)) +
+  geom_boxplot() +
+  ggtitle("Fare")
+
+```
+
+- Passagers in class 1 have the highest survival rate, then the class 2 and class 3 has the lowest survival rate
+- Female has higher survival rate than male
+- The distribution of survived and not survived are very similar if grouped by on age
+- Most passager has 0 Siblings or Parents, so it can hardly be used to infer survival rate
+- The top 1/4 percentile of survived had payed a higher fare than the top 1/4 perceptile of non-survived
+
+# Q3
+
+```{r}
+titanic_train %>%
+  select(is.numeric) %>%
+  cor() %>%
+  corrplot(type = "lower", diag = FALSE, method = "color")
+```
+
+- Sibling and parch, parch and fare, are pairs that has small positive correlation
+
+# Q4
+
+```{r}
+cleaned_train <- titanic_train %>%
+  select(-c(passenger_id, name, cabin, ticket, embarked))
+
+recipe <- recipe(survived ~ ., data = cleaned_train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_interact(terms = ~ starts_with("sex"):fare) %>%
+  step_interact(terms = ~ starts_with("pclass"):fare) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_impute_linear(age, impute_with = imp_vars(all_predictors()))
+recipe
+```
+
+# Q5
+```{r}
+log_reg <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+log_workflow <- workflow() %>%
+  add_model(log_reg) %>%
+  add_recipe(recipe = recipe)
+```
+
+```{r}
+log_fit <- fit(log_workflow, cleaned_train)
+log_fit %>%
+  tidy()
+```
+
+# Q6
+```{r}
+lda_mod <- discrim_linear() %>%
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+lda_workflow <- workflow() %>%
+  add_model(lda_mod) %>%
+  add_recipe(recipe = recipe)
+
+lda_fit <- fit(lda_workflow, cleaned_train)
+lda_fit
+```
+
+# Q7
+```{r}
+qda_mod <- discrim_linear() %>%
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+qda_workflow <- workflow() %>%
+  add_model(qda_mod) %>%
+  add_recipe(recipe = recipe)
+
+qda_fit <- fit(qda_workflow, cleaned_train)
+qda_fit
+```
+
+# Q8
+```{r}
+nb_mod <- naive_Bayes() %>%
+  set_mode("classification") %>%
+  set_engine("klaR") %>%
+  set_args(usekernel = FALSE)
+
+nb_workflow <- workflow() %>%
+  add_model(nb_mod) %>%
+  add_recipe(recipe = recipe)
+
+nb_fit <- fit(nb_workflow, cleaned_train)
+nb_fit
+```
+
+# 9 Assessing the accurancy
+```{r, warning=FALSE}
+log_pred <- predict(log_fit, new_data = cleaned_train, type="prob")
+augment(log_fit, new_data = cleaned_train) %>%
+  conf_mat(truth=survived, estimate = .pred_class)
+log_reg_acc <- augment(log_fit, new_data = cleaned_train) %>%
+  accuracy(truth=survived, estimate = .pred_class)
+
+lda_pred <- predict(lda_fit, new_data = cleaned_train, type="prob")
+augment(lda_fit, new_data = cleaned_train) %>%
+  conf_mat(truth=survived, estimate = .pred_class)
+lda_acc <- augment(lda_fit, new_data = cleaned_train) %>%
+  accuracy(truth=survived, estimate = .pred_class)
+
+
+qda_pred <- predict(qda_fit, new_data = cleaned_train, type="prob")
+augment(qda_fit, new_data = cleaned_train) %>%
+  conf_mat(truth=survived, estimate = .pred_class)
+qda_acc <- augment(qda_fit, new_data = cleaned_train) %>%
+  accuracy(truth=survived, estimate = .pred_class)
+
+nb_pred <- predict(nb_fit, new_data = cleaned_train, type="prob")
+augment(nb_fit, new_data = cleaned_train) %>%
+  conf_mat(truth=survived, estimate = .pred_class)
+nb_acc <- augment(nb_fit, new_data = cleaned_train) %>%
+  accuracy(truth=survived, estimate = .pred_class)
+
+log_pred
+train_with_pred <- bind_cols(cleaned_train, log_pred, lda_pred, qda_pred, nb_pred)
+head(train_with_pred)
+```
+
+```{r}
+accuracies <- c(log_reg_acc$.estimate, lda_acc$.estimate, nb_acc$.estimate, qda_acc$.estimate)
+models <- c("Logistic Regression", "LDA", "Naive Bayes", "QDA")
+results <- tibble(accuracies = accuracies, models = models)
+results %>% 
+  arrange(-accuracies)
+```
+- choose logistic regression for the highest accuracies
+
+# Q10
+```{r}
+predict(log_fit, new_data = titanic_testing, type="prob")
+
+augment(log_fit, new_data = titanic_testing) %>%
+  conf_mat(truth = survived, estimate = .pred_class)
+
+multi_metric <- metric_set(accuracy, sensitivity, specificity)
+
+augment(log_fit, new_data = titanic_testing) %>%
+  multi_metric(truth = survived, estimate = .pred_class)
+
+augment(log_fit, new_data = titanic_testing) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+```
+- The model accurancy of logistic regression is 0.795
+- slightly differs since the training data does not has the exactly same distribution as the testing data
+
+# Q11
+$$
+\begin{eqnarray}
+p(z) = p &=& \frac{e^z}{1+e^z} \\
+pe^z + p &=& e^z \\
+p &=& (1-p)e^z \\
+\frac{p}{1-p} &=& e^z \\
+z &=& ln(\frac{p}{1-p})
+\end{eqnarray}
+$$
+
+# Q12
+$$
+\begin{eqnarray}
+z = \beta_0 +\beta_1(x_1+2) &=& ln(\frac{p}{1-p}) \\
+\beta_0 +\beta_1x_1 +2\beta_1 &=& ln(\frac{p}{1-p}) \\
+e^{\beta_0 +\beta_1x_1 +2\beta_1} &=& \frac{p}{1-p} \\
+e^{2\beta_1}e^{\beta_0 +\beta_1x_1} &=& \frac{p}{1-p}
+\end{eqnarray}
+$$
+
+The odd increases by $e^{2\beta_1}$
+if $\beta_1 < 0$
+$$
+\lim_{x_1\rightarrow \infty} e^{\beta_0 +\beta_1x_1} = 0
+$$
+
+$$
+\begin{eqnarray}
+\frac{p}{1-p} &=& 0 \\
+p &=& 0
+\end{eqnarray}
+$$
+
+if $\beta_1 > 0$
+$$
+\begin{eqnarray}
+\frac{p}{1-p} &=& \infty \\
+p &=& 1
+\end{eqnarray}
+$$
