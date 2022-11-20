@@ -1,0 +1,177 @@
+# HW 4
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(vroom)
+```
+```{r}
+titanic <- vroom("data/titanic.csv")
+head(titanic)
+
+titanic <- titanic %>%
+  mutate(pclass = factor(pclass), survived = factor(survived)) %>%
+  mutate(survived = fct_relevel(survived, c("Yes", "No")))
+
+levels(titanic$pclass)
+levels(titanic$survived)
+```
+
+```{r}
+titanic <- titanic %>%
+  select(-c(passenger_id, name, cabin, ticket, embarked))
+
+```
+
+# Q1
+```{r}
+set.seed(256)
+titanic_split <- initial_split(titanic, strata = survived, prop = 0.7)
+titanic_train <- training(titanic_split)
+titanic_testing <- testing(titanic_split)
+View(titanic_train)
+```
+
+# Q2
+```{r}
+titanic_train_fold <- titanic_train %>%
+    vfold_cv(v = 10)
+titanic_train
+titanic_train_fold
+```
+
+# Q3
+K-fold cross validation is to divide the dataset you want to predict into K groups,
+then calculate MSE for each group and then take the mean of the group mean of the total MSE
+
+We should use it when
+1. we have small data and cannot have large enough training and testing dataset
+2. We want less variability
+
+LOOCV
+
+# Q4
+```{r}
+titanic_recipe <- recipe(survived ~ ., data = titanic_train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_interact(terms = ~ starts_with("sex"):fare) %>%
+  step_interact(terms = ~ starts_with("pclass"):fare) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_impute_linear(age, impute_with = imp_vars(all_predictors()))
+
+# Logit
+log_reg <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+log_workflow <- workflow() %>%
+  add_model(log_reg) %>%
+  add_recipe(recipe = titanic_recipe)
+
+# LDA
+lda_mod <- discrim_linear() %>%
+set_mode("classification") %>%
+set_engine("MASS")
+
+lda_workflow <- workflow() %>%
+  add_model(lda_mod) %>%
+  add_recipe(recipe = titanic_recipe)
+
+# QDA
+qda_mod <- discrim_linear() %>%
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+qda_workflow <- workflow() %>%
+  add_model(qda_mod) %>%
+  add_recipe(recipe = titanic_recipe)
+```
+
+27
+# Q5
+
+```{r}
+log_fit <- log_workflow %>%
+    fit_resamples(titanic_train_fold)
+
+lda_fit <- lda_workflow %>%
+    fit_resamples(titanic_train_fold)
+
+qda_fit <- qda_workflow %>%
+    fit_resamples(titanic_train_fold)
+```
+
+# Q7
+```{r}
+collect_metrics(log_fit)
+collect_metrics(lda_fit)
+collect_metrics(qda_fit)
+```
+
+Logistic regression has the highest accurancy with smilar stderr as the other two
+
+# Q7
+```{r}
+log_fit_all <- log_workflow %>%
+    fit(titanic_train)
+```
+
+# Q8
+```{r}
+augment(log_fit_all, new_data = titanic_testing) %>%
+  conf_mat(truth = survived, estimate = .pred_class)
+
+multi_metric <- metric_set(accuracy, sensitivity, specificity)
+
+augment(log_fit_all, new_data = titanic_testing) %>%
+  multi_metric(truth = survived, estimate = .pred_class)
+
+augment(log_fit_all, new_data = titanic_testing) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+```
+
+The 10fold CV and the entire fit produce a similar accuracy value
+
+# Q9
+
+$$
+S = RSS = \sum^n_{i=1}(y_i - \hat \beta)^2 = \sum^n_{i=1}(y_i - 2 y_i \hat \beta + \hat \beta^2)
+$$
+
+Now solving differential equations
+
+$$
+\begin{eqnarray}
+S' &=& 0 \\
+\sum^n_{i=1}(-2y_i + 2\hat \beta) &=& 0\\
+\sum^n_{i=1} y_i = \sum^n_{i=1} \beta \\
+\beta = \frac{\sum^n_{i=1} y_i}{n}
+\end{eqnarray}
+$$
+
+# Q 10
+$$
+S = RSS = \sum^n_{i=1}(y_i - \hat \beta)^2 = \sum^n_{i=1}(y_i - 2 y_i \hat \beta + \hat \beta^2)
+$$
+
+$$
+\begin{eqnarray}
+S' &=& 0 \\
+\sum^n_{i=1}(-2y_i + 2\hat \beta) &=& 0\\
+\sum^n_{i=1} y_i = \sum^n_{i=1} \beta \\
+\beta = \frac{\sum^n_{i=1} y_i}{n}
+\end{eqnarray}
+$$
+
+Denote $u\sim Uniform(1, n)$
+Denote $S = \sum_{i=1}^n y_i$ 
+$$
+\begin{eqnarray}
+Cov(\hat \beta^{(1)}, \hat \beta^{(2)}) &=& Cov((S-y_{u})/n, (S-y_{u})/n) \\
+&=& \frac{1}{n} Cov(S-y_{u}, S-y_{u}) \\
+&=& -\frac{1}{n} Cov(y_{u}, y_{u})
+\end{eqnarray} 
+$$

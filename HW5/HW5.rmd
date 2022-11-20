@@ -1,0 +1,171 @@
+#() Cookbook
+
+- ID for each pokemon
+- Name: Name of each pokemon
+- Type 1: Each pokemon has a type, this determines weakness/resistance to attacks
+- Type 2: Some pokemon are dual type and have 2
+- Total: sum of all stats that come after this, a general guide to how strong a pokemon is
+- HP: hit points, or health, defines how much damage a pokemon can withstand before fainting
+- Attack: the base modifier for normal attacks (eg. Scratch, Punch)
+- Defense: the base damage resistance against normal attacks
+- SP Atk: special attack, the base modifier for special attacks (e.g. fire blast, bubble beam)
+- SP Def: the base damage resistance against special attacks
+- Speed: determines which pokemon attacks first each round
+
+# Q1
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+library(glmnet)
+tidymodels_prefer()
+```
+```{r}
+library(janitor)
+pokemon <- vroom("data/Pokemon.csv")
+pokemon <- clean_names(pokemon)
+view(pokemon)
+```
+
+`clean_names` convert all the names to conventional C-style naming scheme (ascii, default lowercase, underscore).
+So all the names are easier to use when calling them in R, and less prone to incompatability and human errors
+
+# Q2
+```{r}
+pokemon %>%
+    ggplot(aes(x = type_1)) +
+    geom_bar()
+
+length(unique(pokemon$type_1))
+```
+There're 18 types
+
+```{r}
+pokemon_cleaned <- pokemon %>%
+    filter(type_1 %in% c("Bug", "Fire", "Grass", "Normal", "Water", "Psychic"))
+
+pokemon_cleaned$type_1 <- factor(pokemon_cleaned$type_1)
+pokemon_cleaned$legendary <- factor(pokemon_cleaned$legendary, 
+    c("TRUE", "FALSE"))
+
+levels(pokemon_cleaned$type_1)
+levels(pokemon_cleaned$legendary)
+
+```
+
+# Q3
+```{r}
+pokemon_split <- initial_split(pokemon_cleaned, strata = type_1)
+pokemon_training <- training(pokemon_split)
+pokemon_testing <- testing(pokemon_split)
+```
+
+```{r}
+pokemon_folded <- pokemon_training %>%
+    vfold_cv(, v = 5, strata = type_1)
+```
+
+Make sure every fold has the same amount of type distribution for fitting
+
+# Q4
+
+```{r}
+elastic_recipe <- pokemon_training %>%
+    recipe(type_1 ~ legendary +
+        generation +
+        sp_atk +
+        attack +
+        speed +
+        defense +
+        hp +
+        sp_def) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_normalize(all_predictors())
+```
+
+# Q5
+```{r}
+elastic_spec <- multinom_reg(penalty = tune(), mixture = tune()) %>%
+    set_engine("glmnet") %>%
+    set_mode("classification")
+
+penalty_grid <- grid_regular(penalty(c(-5, 5)), mixture(c(0,1)), levels = 10)
+```
+
+$5*4*100$
+
+# Q6
+```{r}
+elastic_workflow <- workflow() %>%
+    add_recipe(elastic_recipe) %>%
+    add_model(elastic_spec)
+
+elastic_res <- tune_grid(
+    elastic_workflow,
+    resamples = pokemon_folded,
+    grid = penalty_grid)
+elastic_res
+autoplot(elastic_res)
+collect_metrics(elastic_res)
+```
+
+Low penalty produce better accuracy
+lower mixture is better when penalty is low
+
+# Q7
+
+```{r}
+best_penalty <- select_best(elastic_res, metric = "roc_auc")
+best_penalty
+
+elastic_final <- finalize_workflow(elastic_workflow, best_penalty)
+elastic_fit <- fit(elastic_final, data = pokemon_training)
+elastic_aug <- augment(elastic_fit, new_data = pokemon_testing)
+conf_matrix <- elastic_aug %>%
+    conf_mat(truth = type_1, estimate = .pred_class)
+
+elastic_aug %>%
+    accuracy(truth = type_1, estimate = .pred_class)
+
+```
+# Q8
+```{r}
+elastic_aug %>%
+    roc_auc(type_1, .pred_Bug:.pred_Water)
+
+elastic_aug %>%
+    roc_curve(type_1, .pred_Bug:.pred_Water) %>%
+    autoplot()
+
+conf_matrix %>%
+    autoplot(type="heatmap")
+```
+
+
+model has medium to low accuracy
+
+ROC AUC highest for normal type
+ROC AUC lowest for water type
+
+Normal types have relatively unique stats. They have lowest special attack and higher HP in general, thus larger coefficient on those unique stats
+Comparatively, Water and fire have similar average stats, thus their coefficient are close
+
+# Q9
+
+```{r}
+library(boot)
+shots <- c(rep(1, 337), rep(0, 464))
+means <- c()
+
+for (x in 1:1000) {
+    s <- sample(shots, 30)
+    means <- append(means, mean(s))
+}
+
+data.frame(mean = means) %>%
+    ggplot(aes(x = mean)) +
+    geom_histogram()
+
+quantile(means, probs = c(0.01, 0.99))
+```
+
