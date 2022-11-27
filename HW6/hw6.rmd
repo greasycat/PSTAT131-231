@@ -1,0 +1,292 @@
+# Q1
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(vroom)
+library(corrplot)
+library(ranger)
+tidymodels_prefer()
+```
+```{r}
+
+pokemon <- vroom("data/Pokemon.csv")
+pokemon <- clean_names(pokemon)
+head(pokemon)
+
+pokemon_cleaned <- pokemon %>%
+    filter(type_1 %in% c("Bug", "Fire", "Grass", "Normal", "Water", "Psychic"))
+
+pokemon_cleaned$type_1 <- factor(pokemon_cleaned$type_1)
+pokemon_cleaned$legendary <- factor(pokemon_cleaned$legendary, 
+    c("TRUE", "FALSE"))
+
+levels(pokemon_cleaned$type_1)
+levels(pokemon_cleaned$legendary)
+
+pokemon_split <- initial_split(pokemon_cleaned, strata = type_1)
+pokemon_training <- training(pokemon_split)
+pokemon_testing <- testing(pokemon_split)
+
+pokemon_folded <- pokemon_training %>%
+    vfold_cv(, v = 5, strata = type_1)
+
+pokemon_recipe <- pokemon_training %>%
+    recipe(type_1 ~ legendary +
+        generation +
+        sp_atk +
+        attack +
+        speed +
+        defense +
+        hp +
+        sp_def) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_normalize(all_predictors())
+```
+
+# Q2
+```{r}
+pokemon_cleaned %>%
+    select_if(is.numeric) %>%
+    select(-c(number)) %>%
+    cor() %>%
+    corrplot(method = "number")
+```
+
+
+
+Number removed, they have approximated 0 correlation intended by Dev team to achieve balance
+
+since Tanky pokemon usually have nerfed speed
+HP/Def/Sp_def and speed have low correlation
+
+Tanky pokemon often has both high def and high special def, thus higher correlation
+
+For pokemons specialized in speical abilities (psychic especially)
+Special attack has the highest correlation with special def
+
+(If We have dragon type the correlation will be slightly different)
+
+# Q3
+```{r}
+tree_spec <- decision_tree() %>%
+    set_engine("rpart") %>%
+    set_mode("classification")
+
+tree_tune <- tree_spec %>%
+    set_args(cost_complexity = tune())
+
+tree_workflow <- workflow() %>%
+    add_model(tree_tune) %>%
+    add_recipe(pokemon_recipe)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+tune_res <- tune_grid(
+    tree_workflow,
+    resamples = pokemon_folded,
+    grid = param_grid,
+    metric = metric_set(roc_auc)
+)
+
+tune_res %>%
+    autoplot()
+```
+
+Larger but not too large
+
+# Q4
+```{r}
+collect_metrics(tune_res) %>%
+    arrange(desc(mean))
+```
+0.631
+
+# Q5
+```{r}
+best_complexity <- select_best(tune_res, metric = "roc_auc")
+
+tree_final <- finalize_workflow(tree_workflow, best_complexity)
+
+tree_final_fit <- fit(tree_final, data = pokemon_training)
+
+tree_final_fit %>%
+    extract_fit_engine() %>%
+    rpart.plot()
+```
+
+# Q6
+```{r}
+rf_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+    set_engine("ranger", importance = "impurity") %>%
+    set_mode("classification")
+
+rf_workflow <- workflow() %>%
+    add_model(rf_spec) %>%
+    add_recipe(pokemon_recipe)
+
+rf_param_grid <- grid_regular(
+    mtry(c(1, 7)),
+    trees(c(1, 2000)),
+    min_n(c(2, 40)),
+    levels = 10
+)
+```
+- Mtry: number of predictors sampled every time R split a tree
+- Tree: number of trees to construct
+- Min_n number of data needed to split a node
+
+- Mtry is selecting predictors so =8 is when selecting all the predictors, just like a single decision tree
+
+# Q7
+```{r}
+rf_tune_res <- tune_grid(
+    rf_workflow,
+    resamples = pokemon_folded,
+    grid = rf_param_grid,
+    metric = metric_set(roc_auc),
+    control = control_grid(verbose = TRUE)
+)
+
+rf_tune_res %>%
+    autoplot()
+
+# 4 mtry 223 trees and 2 min_n
+```
+# Q8
+
+```{r}
+rf_tune_res %>%
+    collect_metrics() %>%
+    arrange(desc(mean))
+
+```
+roc_auc:0.725
+
+# 9
+```{r}
+
+rf_best_tune <- select_best(rf_tune_res, metric = "roc_auc")
+rf_final <- finalize_workflow(rf_workflow, rf_best_tune)
+rf_final_fit <- fit(rf_final, data = pokemon_training)
+rf_final_fit
+
+vip(rf_final_fit %>% extract_fit_parsnip())
+```
+
+# 10
+```{r}
+boost_spec <- boost_tree(trees = tune()) %>%
+    set_engine("xgboost") %>%
+    set_mode("classification")
+
+boost_workflow <- workflow() %>%
+    add_model(boost_spec) %>%
+    add_recipe(pokemon_recipe)
+
+boost_param_grid <- grid_regular(trees(c(10,2000)), levels = 10)
+boost_tune_res <- tune_grid(
+    boost_workflow,
+    resamples = pokemon_folded,
+    grid = boost_param_grid,
+    metric = metric_set(roc_auc),
+)
+
+boost_tune_res %>%
+    autoplot()
+
+boost_tune_res %>%
+    collect_metrics()%>%
+    arrange(desc(mean))
+```
+roc_auc 0.709
+
+# Q11
+```{r}
+aoc_table <- data.frame(model = c("Pruned Tree", "Random Forest", "Boosted tree"), roc_auc = c(0.631, 0.725, 0.709))
+print(aoc_table)
+
+rf_final_fit_testing <- fit(rf_final, data = pokemon_testing)
+
+aug <- augment(rf_final_fit_testing, new_data = pokemon_testing)
+aug %>%
+    roc_auc(type_1, .pred_Bug:.pred_Water)
+
+aug %>%
+    roc_curve(type_1, .pred_Bug: .pred_Water) %>%
+    autoplot()
+
+aug %>%
+    conf_mat(truth = type_1, estimate = .pred_class) %>%
+    autoplot()
+```
+100% accuracy during
+
+# 12
+```{r}
+abalone <- vroom("data/abalone.csv")
+abalone <- abalone %>% mutate(age = rings + 1.5)
+abalone <- abalone %>% select(-rings)
+
+
+
+abalone_split <- initial_split(abalone, prop = 0.80,
+                                strata = age)
+abalone_training <- training(abalone_split)
+abalone_testing <- testing(abalone_split)
+
+
+abalone_fold <- abalone_training %>%
+    vfold_cv(, v = 5, strata = age)
+
+abalone_recipe <- recipe(age ~ ., data = abalone_training) %>%
+    step_dummy(all_nominal_predictors()) %>%
+    step_interact(terms = ~ starts_with('type_'):shucked_weight) %>%
+    step_interact(terms = ~ longest_shell:diameter) %>%
+    step_interact(terms = ~ shucked_weight:shell_weight) %>%
+    step_normalize(all_numeric_predictors())
+
+abalone_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+    set_engine("ranger", importance = "impurity") %>%
+    set_mode("regression")
+
+abalone_workflow <- workflow() %>%
+    add_model(abalone_spec) %>%
+    add_recipe(abalone_recipe)
+
+abalone_param_grid <- grid_regular(
+    mtry(c(1, 7)),
+    trees(c(1, 2000)),
+    min_n(c(2, 40)),
+    levels = 4
+)
+
+abalone_tune_res <- tune_grid(
+    abalone_workflow,
+    resamples = abalone_fold,
+    grid = abalone_param_grid,
+    metric = metric_set(rmse),
+    control = control_grid(verbose = TRUE)
+)
+
+abalone_tune_res %>%
+    autoplot()
+    
+abalone_tune_res %>%
+    collect_metrics() %>%
+    arrange(mean)
+
+abalone_best <- select_best(abalone_tune_res, metric = "rmse")
+abalone_final <- finalize_workflow(abalone_workflow, abalone_best)
+abalone_final_fit <- fit(abalone_final, data = abalone_training)
+
+metrics <- metric_set(rmse)
+pred <- predict(abalone_final_fit, abalone_testing)
+pred <- bind_cols(pred, abalone_testing %>% select(age))
+
+pred %>% metrics(truth = age, estimate = .pred)
+```
